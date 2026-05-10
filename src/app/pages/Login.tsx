@@ -1,20 +1,79 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Activity, Mail, Lock, Eye, EyeOff } from "lucide-react";
+import { loginUser, registerUser } from "../../utils/store";
+import { supabase } from "../../lib/supabase";
 
 export function Login() {
   const navigate = useNavigate();
   const [isLogin, setIsLogin] = useState(true);
   const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
     name: "",
   });
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    navigate("/dashboard");
+    setError("");
+    setLoading(true);
+
+    try {
+      let authError: string | null;
+
+      if (isLogin) {
+        authError = await loginUser(formData.email, formData.password);
+      } else {
+        authError = await registerUser(formData.name, formData.email, formData.password);
+      }
+
+      if (authError) {
+        setError(authError);
+        setLoading(false);
+        return;
+      }
+
+      // Supabase auth succeeded
+      setLoading(false);
+      navigate("/dashboard");
+    } catch (err) {
+      console.error('[PhysioBuddy] Auth error:', err);
+      setError('An unexpected error occurred. Please try again.');
+      setLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    if (!formData.email) {
+      setError("Please enter your email first");
+      return;
+    }
+
+    setError("");
+    setLoading(true);
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        formData.email.trim().toLowerCase(),
+        {
+          redirectTo: `${window.location.origin}/reset-password`,
+        }
+      );
+
+      if (error) {
+        setError(error.message);
+      } else {
+        alert("Password reset email sent. Check your inbox.");
+      }
+    } catch (err) {
+      console.error("[PhysioBuddy] Forgot password error:", err);
+      setError("An unexpected error occurred. Please try again.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -60,6 +119,11 @@ export function Login() {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
+              {error && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+                  {error}
+                </div>
+              )}
               {!isLogin && (
                 <div>
                   <label className="block text-sm font-medium mb-2">Full Name</label>
@@ -114,9 +178,13 @@ export function Login() {
                     <input type="checkbox" className="w-4 h-4 rounded border-border" />
                     <span className="text-muted-foreground">Remember me</span>
                   </label>
-                  <a href="#" className="text-primary hover:underline">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    className="text-primary hover:underline"
+                  >
                     Forgot password?
-                  </a>
+                  </button>
                 </div>
               )}
 

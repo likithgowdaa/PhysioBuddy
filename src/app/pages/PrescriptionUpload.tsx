@@ -1,12 +1,21 @@
 import { useState } from "react";
 import { Upload, FileText, X, CheckCircle, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router";
+import { allExercises, setState } from "../../utils/store";
+import type { ExerciseType } from "../../utils/poseUtils";
+import { validateUpload } from "../../utils/uploadValidator";
+import { extractText, matchExercises, getMatchedKeywords } from "../../services/ocrService";
 
 export function PrescriptionUpload() {
   const navigate = useNavigate();
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [showRecommendations, setShowRecommendations] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [isValidating, setIsValidating] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState(0);
+  const [matchedTypes, setMatchedTypes] = useState<ExerciseType[]>([]);
+  const [extractedSummary, setExtractedSummary] = useState('');
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -17,29 +26,90 @@ export function PrescriptionUpload() {
     setIsDragging(false);
   };
 
+  const processFile = async (file: File) => {
+    setValidationError(null);
+    setShowRecommendations(false);
+    setIsValidating(true);
+    setUploadedFile(file);
+    setAnalysisProgress(0);
+    setMatchedTypes([]);
+    setExtractedSummary('');
+
+    const result = await validateUpload(file, 'prescription');
+
+    if (!result.isValid) {
+      setIsValidating(false);
+      setValidationError(result.message);
+      setShowRecommendations(false);
+      return;
+    }
+
+    // Run OCR to extract text from the prescription
+    try {
+      const text = await extractText(file, (progress) => {
+        setAnalysisProgress(progress);
+      });
+
+      console.log('[PhysioBuddy] OCR extracted text:', text.substring(0, 200));
+
+      // Match medical keywords from extracted text
+      const exercises = matchExercises(text);
+      const keywords = getMatchedKeywords(text);
+
+      setMatchedTypes(exercises);
+      setExtractedSummary(
+        keywords.length > 0
+          ? `Detected: ${keywords.slice(0, 4).join(', ')}`
+          : text.length > 10
+            ? `Extracted ${text.split(/\s+/).length} words from prescription`
+            : 'Based on your prescription'
+      );
+    } catch (err) {
+      console.error('[PhysioBuddy] OCR error:', err);
+      // Fallback: if OCR fails, still show default recommendations
+      setMatchedTypes([]);
+      setExtractedSummary('Based on your prescription');
+    }
+
+    setIsValidating(false);
+    setShowRecommendations(true);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) {
-      setUploadedFile(file);
-      setTimeout(() => setShowRecommendations(true), 1500);
+      processFile(file);
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      setUploadedFile(file);
-      setTimeout(() => setShowRecommendations(true), 1500);
+      processFile(file);
     }
   };
 
-  const recommendedExercises = [
-    { name: "Knee Extension", sessions: "3x per day", duration: "10 min" },
-    { name: "Leg Raises", sessions: "2x per day", duration: "8 min" },
-    { name: "Quad Stretches", sessions: "Daily", duration: "5 min" },
-  ];
+  // Get recommended exercises based on OCR analysis
+  const getRecommendedExercises = () => {
+    if (!uploadedFile || validationError || isValidating) return [];
+
+    // Use OCR-matched exercises if available
+    if (matchedTypes.length > 0) {
+      return allExercises.filter((e) => matchedTypes.includes(e.type)).slice(0, 4);
+    }
+
+    // Fallback: return general defaults
+    return allExercises.slice(0, 3);
+  };
+
+  const recommendedExercises = getRecommendedExercises();
+
+  const handleExerciseClick = (exerciseType: ExerciseType) => {
+    setState({ selectedExercise: exerciseType });
+    navigate("/demo-video");
+  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto">
@@ -71,8 +141,14 @@ export function PrescriptionUpload() {
                 <CheckCircle className="w-8 h-8 text-white" />
               </div>
               <div>
-                <h3 className="font-semibold text-lg mb-1">File Uploaded Successfully</h3>
-                <p className="text-muted-foreground mb-4">{uploadedFile.name}</p>
+                <h3 className="font-semibold text-lg mb-1">
+                  {isValidating ? 'Analyzing Prescription...' : 'File Uploaded Successfully'}
+                </h3>
+                <p className="text-muted-foreground mb-4">
+                  {isValidating
+                    ? `Reading text from document... ${analysisProgress > 0 ? `${analysisProgress}%` : ''}`
+                    : uploadedFile.name}
+                </p>
                 <button
                   onClick={() => {
                     setUploadedFile(null);
@@ -150,16 +226,16 @@ export function PrescriptionUpload() {
               <div>
                 <h3 className="font-semibold">AI Analysis Complete</h3>
                 <p className="text-sm text-muted-foreground">
-                  Based on your prescription
+                  {extractedSummary || 'Based on your prescription'}
                 </p>
               </div>
             </div>
 
             <div className="space-y-3">
-              {recommendedExercises.map((exercise, index) => (
+              {recommendedExercises.map((exercise) => (
                 <button
-                  key={index}
-                  onClick={() => navigate("/demo-video")}
+                  key={exercise.type}
+                  onClick={() => handleExerciseClick(exercise.type)}
                   className="w-full bg-white rounded-xl p-4 flex items-center justify-between hover:shadow-md transition-all group"
                 >
                   <div className="text-left">
@@ -167,7 +243,7 @@ export function PrescriptionUpload() {
                       {exercise.name}
                     </h4>
                     <p className="text-sm text-muted-foreground">
-                      {exercise.sessions} • {exercise.duration}
+                      {exercise.difficulty} • {exercise.duration}
                     </p>
                   </div>
                   <ChevronRight className="w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors" />

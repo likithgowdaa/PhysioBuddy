@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Play,
   Pause,
@@ -6,11 +6,7 @@ import {
   Check,
   AlertTriangle,
   Camera,
-  Video,
-  Maximize2,
-  Minimize2,
   Volume2,
-  VolumeX,
   X,
   Activity,
   Target,
@@ -22,6 +18,10 @@ import { Card } from "../components/design-system/Card";
 import { Alert } from "../components/design-system/Alert";
 import { StatCard } from "../components/design-system/StatCard";
 import CameraComponent from "../components/Camera";
+import { getState, setState, getExerciseInfo, estimateCalories } from "../../utils/store";
+import type { ExerciseData } from "../../hooks/useExerciseLogic";
+import { saveSession } from "../../services/sessionService";
+import { resumeAudioContext, playBeep } from "../../utils/audioUtils";
 
 type FeedbackType = {
   message: string;
@@ -32,18 +32,31 @@ type SessionState = "idle" | "loading" | "positioned" | "running" | "paused" | "
 
 export function ExerciseMonitoring() {
   const navigate = useNavigate();
+
+  // Read selected exercise from store
+  const selectedExercise = getState().selectedExercise;
+  const exerciseInfo = getExerciseInfo(selectedExercise);
+
   const [sessionState, setSessionState] = useState<SessionState>("loading");
   const [isRunning, setIsRunning] = useState(false);
   const [reps, setReps] = useState(0);
-  const [accuracy, setAccuracy] = useState(85);
+  const [accuracy, setAccuracy] = useState(60);
+  const [angle, setAngle] = useState(0);
   const [status, setStatus] = useState<"correct" | "incorrect">("correct");
   const [feedback, setFeedback] = useState<FeedbackType | null>(null);
   const [timer, setTimer] = useState(0);
-  const [isDemoMinimized, setIsDemoMinimized] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
   const [bodyInFrame, setBodyInFrame] = useState(false);
 
-  // Simulate camera loading and positioning
+  // Live refs — always hold latest values (immune to stale React state)
+  const liveRepsRef = useRef(0);
+  const liveTimerRef = useRef(0);
+  const liveAccuracyRef = useRef(60);
+
+  // Track incorrect reps for session report
+  const incorrectRepsRef = useRef(0);
+  const lastRepCountRef = useRef(0);
+
+  // Camera loading → positioned → idle
   useEffect(() => {
     const loadTimer = setTimeout(() => {
       setSessionState("positioned");
@@ -55,45 +68,53 @@ export function ExerciseMonitoring() {
     return () => clearTimeout(loadTimer);
   }, []);
 
-  // Exercise simulation
+  // Timer — counts up every second while running
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
     if (isRunning && bodyInFrame) {
       interval = setInterval(() => {
-        setTimer((prev) => prev + 1);
-
-        // Simulate rep counting and feedback
-        if (Math.random() > 0.65) {
-          setReps((prev) => {
-            const newReps = prev + 1;
-            
-            // Random feedback simulation
-            const feedbackOptions = [
-              { message: "Perfect form! Keep it up!", type: "correct" as const },
-              { message: "Straighten your back more", type: "warning" as const },
-              { message: "Raise your arm higher", type: "warning" as const },
-              { message: "Good! Maintain this position", type: "correct" as const },
-              { message: "Bend your knee to 90 degrees", type: "warning" as const },
-            ];
-
-            const selectedFeedback = feedbackOptions[Math.floor(Math.random() * feedbackOptions.length)];
-            setFeedback(selectedFeedback);
-            setStatus(selectedFeedback.type === "correct" ? "correct" : "incorrect");
-            
-            // Update accuracy
-            if (selectedFeedback.type === "correct") {
-              setAccuracy((prev) => Math.min(100, prev + 3));
-            } else {
-              setAccuracy((prev) => Math.max(60, prev - 1));
-            }
-
-            return newReps;
-          });
-        }
-      }, 3000);
+        setTimer((prev) => {
+          const next = prev + 1;
+          liveTimerRef.current = next;
+          return next;
+        });
+      }, 1000);
     }
     return () => clearInterval(interval);
   }, [isRunning, bodyInFrame]);
+
+  // Handle real-time exercise data from Camera's AI pose detection
+  const handleExerciseUpdate = useCallback((data: ExerciseData) => {
+    if (!data.bodyDetected) {
+      setBodyInFrame(false);
+      return;
+    }
+    setBodyInFrame(true);
+    setReps(data.reps);
+    setAccuracy(data.accuracy);
+    setAngle(data.angle);
+    liveRepsRef.current = data.reps;
+    liveAccuracyRef.current = data.accuracy;
+
+    // Track incorrect reps
+    if (data.reps > lastRepCountRef.current) {
+      if (data.feedback.type !== 'correct') {
+        incorrectRepsRef.current++;
+      }
+      lastRepCountRef.current = data.reps;
+    }
+
+    if (data.feedback.type === 'correct') {
+      setStatus('correct');
+      setFeedback({ message: data.feedback.message, type: 'correct' });
+    } else {
+      setStatus('incorrect');
+      setFeedback({
+        message: data.feedback.message,
+        type: data.feedback.type === 'error' ? 'error' : 'warning',
+      });
+    }
+  }, []);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -101,13 +122,58 @@ export function ExerciseMonitoring() {
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const handleFinish = () => {
+  const handleFinish = async () => {
     setIsRunning(false);
     setSessionState("completed");
+
+    // Use live refs — immune to stale React state
+    const finalReps = liveRepsRef.current;
+    const finalDuration = liveTimerRef.current;
+    const finalAccuracy = Math.max(60, liveAccuracyRef.current);
+
+    // Block save if no reps were completed or session is invalid
+    if (finalReps === 0 || finalDuration === 0) {
+      console.warn('[PhysioBuddy] Session invalid — reps:', finalReps, 'timer:', finalDuration, '— skipping save');
+      setTimeout(() => navigate("/session-report"), 500);
+      return;
+    }
+
+    // Save session data to store for SessionReport page
+    const calories = estimateCalories(selectedExercise, finalDuration);
+
+    console.log('SAVING ACCURACY:', finalAccuracy, '| reps:', finalReps, '| duration:', finalDuration);
+
+    const sessionData = {
+      exerciseType: selectedExercise,
+      exerciseName: exerciseInfo.name,
+      reps: finalReps,
+      accuracy: finalAccuracy,
+      incorrectReps: incorrectRepsRef.current,
+      duration: finalDuration,
+      calories,
+    };
+
+    setState({ currentSession: sessionData });
+    localStorage.setItem('physioBuddyLatestSession', JSON.stringify(sessionData));
+
+    // Save to Supabase
+    try {
+      await saveSession(sessionData);
+    } catch (err) {
+      console.error('[PhysioBuddy] Supabase save failed:', err);
+    }
+
     setTimeout(() => navigate("/session-report"), 500);
   };
 
   const handleStart = () => {
+    resumeAudioContext(); // Unlock audio after user gesture
+
+    // Force a test beep within user gesture to fully satisfy browser audio policy
+    try {
+      playBeep(1200);
+    } catch { /* ignore */ }
+
     setIsRunning(true);
     setSessionState("running");
   };
@@ -119,12 +185,14 @@ export function ExerciseMonitoring() {
 
   const handleReset = () => {
     setReps(0);
-    setAccuracy(85);
+    setAccuracy(100);
     setTimer(0);
     setFeedback(null);
     setStatus("correct");
     setIsRunning(false);
     setSessionState("idle");
+    incorrectRepsRef.current = 0;
+    lastRepCountRef.current = 0;
   };
 
   return (
@@ -134,7 +202,7 @@ export function ExerciseMonitoring() {
         <div className="mb-6 flex items-center justify-between">
           <div>
             <h1 className="text-2xl sm:text-3xl font-semibold mb-1">Live Exercise Session</h1>
-            <p className="text-muted-foreground text-sm">Knee Extension Exercise</p>
+            <p className="text-muted-foreground text-sm">{exerciseInfo.name}</p>
           </div>
           <button
             onClick={() => navigate("/dashboard")}
@@ -144,188 +212,108 @@ export function ExerciseMonitoring() {
           </button>
         </div>
 
-        {/* Main Split Screen Layout */}
-        <div className={`grid gap-4 mb-4 transition-all ${isDemoMinimized ? 'lg:grid-cols-[300px_1fr]' : 'lg:grid-cols-2'}`}>
-          {/* Demo Video Section */}
-          <div className={`transition-all ${isDemoMinimized ? 'hidden lg:block' : ''}`}>
-            <div className="bg-white rounded-2xl border-2 border-border overflow-hidden shadow-xl h-full">
-              <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-4 py-3 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-white">
-                  <Video className="w-5 h-5" />
-                  <span className="font-semibold">Demo Video</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setIsMuted(!isMuted)}
-                    className="p-1.5 hover:bg-white/20 rounded-lg transition-colors text-white"
-                  >
-                    {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-                  </button>
-                  <button
-                    onClick={() => setIsDemoMinimized(!isDemoMinimized)}
-                    className="p-1.5 hover:bg-white/20 rounded-lg transition-colors text-white"
-                  >
-                    {isDemoMinimized ? <Maximize2 className="w-4 h-4" /> : <Minimize2 className="w-4 h-4" />}
-                  </button>
-                </div>
+        {/* Full Width Camera View */}
+        <div className="mb-4">
+          <div className="bg-white rounded-2xl border-2 border-border overflow-hidden shadow-xl">
+            <div className="bg-gradient-to-r from-green-600 to-green-700 px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-white">
+                <Camera className="w-5 h-5" />
+                <span className="font-semibold">Your Live Posture</span>
               </div>
-              
-              <div className={`relative bg-slate-900 ${isDemoMinimized ? 'aspect-video' : 'aspect-video lg:aspect-[9/16]'}`}>
-                <img
-                  src="https://images.unsplash.com/photo-1764314359427-6e685ce5b719?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwaHlzaW90aGVyYXB5JTIwZXhlcmNpc2UlMjBtZWRpY2FsfGVufDF8fHx8MTc3NjM1MDMxN3ww&ixlib=rb-4.1.0&q=80&w=1080"
-                  alt="Exercise Demo"
-                  className="w-full h-full object-cover"
-                />
-                {isRunning && (
-                  <div className="absolute top-3 left-3 px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-full flex items-center gap-1.5">
-                    <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                    PLAYING
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Live Camera Feed Section */}
-          <div className="relative">
-            <div className="bg-white rounded-2xl border-2 border-border overflow-hidden shadow-xl">
-              <div className="bg-gradient-to-r from-green-600 to-green-700 px-4 py-3 flex items-center justify-between">
-                <div className="flex items-center gap-2 text-white">
-                  <Camera className="w-5 h-5" />
-                  <span className="font-semibold">Your Live Posture</span>
-                </div>
+              <div className="flex items-center gap-3">
                 {isRunning && bodyInFrame && (
                   <div className="flex items-center gap-2 text-white">
                     <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                    <span className="text-sm font-medium">RECORDING</span>
+                    <span className="text-sm font-medium">AI MONITORING</span>
                   </div>
                 )}
+                <div className="bg-white/20 px-3 py-1 rounded-full text-white text-xs font-medium">
+                  Mirror View
+                </div>
               </div>
+            </div>
 
-              <div className="relative aspect-video lg:aspect-[9/16] bg-gradient-to-br from-slate-800 to-slate-900">
-                {/* Enhanced Camera Loading State */}
-                {sessionState === "loading" && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-blue-900/20 to-slate-900">
-                    <div className="relative mb-6">
-                      <div className="w-24 h-24 border-4 border-primary/20 rounded-full absolute animate-ping" />
-                      <div className="w-24 h-24 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
-                      <Camera className="w-12 h-12 text-primary absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
-                    </div>
-                    <h3 className="text-white text-xl font-semibold mb-2">Initializing Camera</h3>
-                    <p className="text-white/70 text-sm mb-4">Please allow camera access</p>
-                    <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                      <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                    </div>
+            <div className="relative aspect-video bg-gradient-to-br from-slate-800 to-slate-900">
+              {/* Camera Loading State */}
+              {sessionState === "loading" && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-blue-900/20 to-slate-900">
+                  <div className="relative mb-6">
+                    <div className="w-24 h-24 border-4 border-primary/20 rounded-full absolute animate-ping" />
+                    <div className="w-24 h-24 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <Camera className="w-12 h-12 text-primary absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
                   </div>
-                )}
+                  <h3 className="text-white text-xl font-semibold mb-2">Initializing Camera</h3>
+                  <p className="text-white/70 text-sm mb-4">Please allow camera access</p>
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-2 h-2 bg-primary rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              )}
 
-                {/* Camera Feed (Mirrored) */}
-                {sessionState !== "loading" && (
-                  <>
-                    <div className="absolute inset-0" style={{ transform: 'scaleX(-1)' }}>
-                      <CameraComponent
-                        onResults={(results) => {
-                          console.log(results.landmarks);
-                        }}
-                      />
-                    </div>
+              {/* Camera Feed (Mirrored) */}
+              {sessionState !== "loading" && (
+                <>
+                  <div className="absolute inset-0">
+                    <CameraComponent
+                      exerciseType={selectedExercise}
+                      onExerciseUpdate={handleExerciseUpdate}
+                      onResults={() => { }}
+                      isRunning={isRunning}
+                      onSessionComplete={handleFinish}
+                    />
+                  </div>
 
-                    {/* Enhanced Positioning Guide with Glass Effect */}
-                    {sessionState === "positioned" && !bodyInFrame && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-                        <div className="text-center text-white p-8 bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 shadow-2xl max-w-md mx-4 animate-in fade-in zoom-in duration-500">
-                          <div className="relative w-20 h-20 mx-auto mb-6">
-                            <div className="w-20 h-20 border-4 border-dashed border-white/50 rounded-2xl absolute animate-pulse" />
-                            <div className="w-16 h-16 border-4 border-white rounded-xl absolute top-2 left-2" />
-                          </div>
-                          <h3 className="text-2xl font-bold mb-3">Position Yourself</h3>
-                          <p className="text-sm mb-4 text-white/90">
-                            Stand 6-8 feet away and ensure your full body is visible in the frame
-                          </p>
-                          <div className="flex items-center justify-center gap-2 text-yellow-300 bg-yellow-500/20 px-4 py-2 rounded-full">
-                            <AlertTriangle className="w-5 h-5 animate-pulse" />
-                            <span className="text-sm font-medium">Detecting body position...</span>
-                          </div>
+                  {/* Positioning Guide */}
+                  {sessionState === "positioned" && !bodyInFrame && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                      <div className="text-center text-white p-8 bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 shadow-2xl max-w-md mx-4">
+                        <div className="relative w-20 h-20 mx-auto mb-6">
+                          <div className="w-20 h-20 border-4 border-dashed border-white/50 rounded-2xl absolute animate-pulse" />
+                          <div className="w-16 h-16 border-4 border-white rounded-xl absolute top-2 left-2" />
+                        </div>
+                        <h3 className="text-2xl font-bold mb-3">Position Yourself</h3>
+                        <p className="text-sm mb-4 text-white/90">
+                          Stand 6-8 feet away and ensure your full body is visible in the frame
+                        </p>
+                        <div className="flex items-center justify-center gap-2 text-yellow-300 bg-yellow-500/20 px-4 py-2 rounded-full">
+                          <AlertTriangle className="w-5 h-5 animate-pulse" />
+                          <span className="text-sm font-medium">Detecting body position...</span>
                         </div>
                       </div>
-                    )}
-
-                    {/* Skeleton Pose Overlay - AI Tracking Visualization */}
-                    {bodyInFrame && (
-                      <>
-                        {/* Body Detection Box */}
-                        <div className="absolute inset-[10%] border-2 border-green-400 rounded-lg pointer-events-none animate-in fade-in duration-500">
-                          <div className="absolute -top-8 left-0 bg-green-500 text-white px-3 py-1 rounded-full text-xs font-semibold">
-                            Body Detected ✓
-                          </div>
-                        </div>
-
-                        {/* Skeleton Pose Lines */}
-                        <svg className="absolute inset-0 w-full h-full pointer-events-none animate-in fade-in duration-700" style={{ transform: 'scaleX(-1)' }}>
-                          {/* Head */}
-                          <circle cx="50%" cy="20%" r="25" fill="none" stroke="#22c55e" strokeWidth="3" />
-                          
-                          {/* Spine */}
-                          <line x1="50%" y1="23%" x2="50%" y2="50%" stroke="#22c55e" strokeWidth="3" />
-                          
-                          {/* Shoulders */}
-                          <line x1="35%" y1="28%" x2="65%" y2="28%" stroke="#22c55e" strokeWidth="3" />
-                          
-                          {/* Left Arm */}
-                          <line x1="35%" y1="28%" x2="28%" y2="42%" stroke="#22c55e" strokeWidth="3" />
-                          <line x1="28%" y1="42%" x2="22%" y2="56%" stroke="#22c55e" strokeWidth="3" />
-                          <circle cx="35%" cy="28%" r="6" fill="#22c55e" />
-                          <circle cx="28%" cy="42%" r="6" fill="#22c55e" />
-                          <circle cx="22%" cy="56%" r="6" fill="#22c55e" />
-                          
-                          {/* Right Arm */}
-                          <line x1="65%" y1="28%" x2="72%" y2="42%" stroke="#22c55e" strokeWidth="3" />
-                          <line x1="72%" y1="42%" x2="78%" y2="56%" stroke="#22c55e" strokeWidth="3" />
-                          <circle cx="65%" cy="28%" r="6" fill="#22c55e" />
-                          <circle cx="72%" cy="42%" r="6" fill="#22c55e" />
-                          <circle cx="78%" cy="56%" r="6" fill="#22c55e" />
-                          
-                          {/* Hips */}
-                          <line x1="42%" y1="50%" x2="58%" y2="50%" stroke="#22c55e" strokeWidth="3" />
-                          
-                          {/* Left Leg */}
-                          <line x1="42%" y1="50%" x2="40%" y2="70%" stroke="#22c55e" strokeWidth="3" />
-                          <line x1="40%" y1="70%" x2="38%" y2="90%" stroke="#22c55e" strokeWidth="3" />
-                          <circle cx="42%" cy="50%" r="6" fill="#22c55e" />
-                          <circle cx="40%" cy="70%" r="6" fill="#22c55e" />
-                          <circle cx="38%" cy="90%" r="6" fill="#22c55e" />
-                          
-                          {/* Right Leg */}
-                          <line x1="58%" y1="50%" x2="60%" y2="70%" stroke="#22c55e" strokeWidth="3" />
-                          <line x1="60%" y1="70%" x2="62%" y2="90%" stroke="#22c55e" strokeWidth="3" />
-                          <circle cx="58%" cy="50%" r="6" fill="#22c55e" />
-                          <circle cx="60%" cy="70%" r="6" fill="#22c55e" />
-                          <circle cx="62%" cy="90%" r="6" fill="#22c55e" />
-                          
-                          {/* Angle Indicator (Knee) */}
-                          {status === "correct" && (
-                            <text x="62%" y="72%" fill="#22c55e" fontSize="14" fontWeight="bold">85°</text>
-                          )}
-                        </svg>
-
-                        {/* Status Border Overlay */}
-                        <div className={`absolute inset-0 border-4 pointer-events-none transition-all ${
-                          status === "correct" 
-                            ? "border-green-500 shadow-[0_0_30px_rgba(34,197,94,0.5)]" 
-                            : "border-red-500 shadow-[0_0_30px_rgba(239,68,68,0.5)]"
-                        }`} />
-                      </>
-                    )}
-
-                    {/* Camera Mirror Label */}
-                    <div className="absolute bottom-4 right-4 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-xs font-medium">
-                      Mirror View
                     </div>
-                  </>
-                )}
-              </div>
+                  )}
+
+                  {/* AI Tracking Overlay */}
+                  {bodyInFrame && (
+                    <>
+                      {/* Body Detection Badge */}
+                      <div className="absolute top-4 left-4 z-10 bg-green-500/90 backdrop-blur-sm text-white px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1.5 animate-in fade-in duration-500">
+                        <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                        Body Detected ✓
+                      </div>
+
+                      {/* Real-time Accuracy Badge */}
+                      <div className={`absolute top-4 right-4 z-10 backdrop-blur-sm text-white px-3 py-1.5 rounded-full text-xs font-semibold animate-in fade-in duration-500 ${accuracy >= 85 ? 'bg-green-500/90' : accuracy >= 60 ? 'bg-yellow-500/90' : 'bg-red-500/90'
+                        }`}>
+                        {accuracy}% Accuracy
+                      </div>
+
+                      {/* Current Angle Display */}
+                      <div className="absolute bottom-4 left-4 z-10 bg-black/70 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-xs font-mono">
+                        Angle: {typeof angle === 'number' ? angle.toFixed(0) : 0}°
+                      </div>
+
+                      {/* Status Glow Border */}
+                      <div className={`absolute inset-0 pointer-events-none transition-all duration-300 ${status === "correct"
+                        ? "border-2 border-green-500/60 shadow-[inset_0_0_30px_rgba(34,197,94,0.15)]"
+                        : "border-2 border-red-500/60 shadow-[inset_0_0_30px_rgba(239,68,68,0.15)]"
+                        }`} />
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>

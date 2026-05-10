@@ -4,20 +4,10 @@ import { useNavigate } from "react-router";
 import { Input } from "../components/design-system/Input";
 import { Card } from "../components/design-system/Card";
 import { Button } from "../components/design-system/Button";
+import { allExercises } from "../../utils/store";
+import { setState } from "../../utils/store";
 
-const exercises = [
-  { id: 1, name: "Knee Extension", category: "Knee", difficulty: "Beginner", duration: "10 min" },
-  { id: 2, name: "Knee Flexion", category: "Knee", difficulty: "Beginner", duration: "8 min" },
-  { id: 3, name: "Knee Rotation", category: "Knee", difficulty: "Intermediate", duration: "12 min" },
-  { id: 4, name: "Shoulder Press", category: "Shoulder", difficulty: "Intermediate", duration: "15 min" },
-  { id: 5, name: "Shoulder Rotation", category: "Shoulder", difficulty: "Beginner", duration: "10 min" },
-  { id: 6, name: "Shoulder Raise", category: "Shoulder", difficulty: "Advanced", duration: "12 min" },
-  { id: 7, name: "Back Extension", category: "Back", difficulty: "Beginner", duration: "8 min" },
-  { id: 8, name: "Back Stretch", category: "Back", difficulty: "Beginner", duration: "10 min" },
-  { id: 9, name: "Lower Back Rotation", category: "Back", difficulty: "Intermediate", duration: "12 min" },
-];
-
-const categories = ["All", "Knee", "Shoulder", "Back"];
+const categories = ["All", "Upper Body", "Lower Body", "Posture / Rehab"];
 
 export function ExerciseSearch() {
   const navigate = useNavigate();
@@ -25,13 +15,18 @@ export function ExerciseSearch() {
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [showSuggestions, setShowSuggestions] = useState(false);
 
-  const filteredExercises = exercises.filter((exercise) => {
+  const filteredExercises = allExercises.filter((exercise) => {
     const matchesSearch = exercise.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === "All" || exercise.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
   const suggestions = searchQuery.length > 0 ? filteredExercises.slice(0, 5) : [];
+
+  const handleSelectExercise = (exerciseType: string) => {
+    setState({ selectedExercise: exerciseType as any });
+    navigate("/demo-video");
+  };
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
@@ -48,7 +43,7 @@ export function ExerciseSearch() {
         <Input
           variant="search"
           type="text"
-          placeholder="Search exercises... (e.g., Knee Extension, Shoulder Press)"
+          placeholder="Search exercises... (e.g., Knee Extension, Shoulder Abduction)"
           value={searchQuery}
           onChange={(e) => {
             setSearchQuery(e.target.value);
@@ -64,11 +59,11 @@ export function ExerciseSearch() {
           <Card variant="elevated" padding="none" className="absolute top-full mt-2 w-full overflow-hidden z-10 animate-in slide-in-from-top-2">
             {suggestions.map((exercise) => (
               <button
-                key={exercise.id}
+                key={exercise.type}
                 onClick={() => {
                   setSearchQuery(exercise.name);
                   setShowSuggestions(false);
-                  navigate("/demo-video");
+                  handleSelectExercise(exercise.type);
                 }}
                 className="w-full px-5 py-4 text-left hover:bg-muted/70 transition-all flex items-center justify-between group border-b border-border last:border-0"
               >
@@ -114,10 +109,10 @@ export function ExerciseSearch() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
           {filteredExercises.map((exercise) => (
             <Card
-              key={exercise.id}
+              key={exercise.type}
               variant="elevated"
               className="cursor-pointer hover:-translate-y-2 text-left group transition-all duration-300"
-              onClick={() => navigate("/demo-video")}
+              onClick={() => handleSelectExercise(exercise.type)}
             >
               <div className="aspect-video bg-gradient-to-br from-blue-50 via-blue-100 to-green-100 rounded-xl mb-4 flex items-center justify-center relative overflow-hidden">
                 <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-secondary/10" />
@@ -131,8 +126,7 @@ export function ExerciseSearch() {
               <div className="flex items-center gap-4 text-sm">
                 <span className="flex items-center gap-2 px-3 py-1 rounded-full bg-muted">
                   <div className={`w-2.5 h-2.5 rounded-full ${
-                    exercise.difficulty === "Beginner" ? "bg-success" :
-                    exercise.difficulty === "Intermediate" ? "bg-warning" : "bg-error"
+                    exercise.difficulty === "Beginner" ? "bg-success" : "bg-warning"
                   }`} />
                   <span className="font-medium">{exercise.difficulty}</span>
                 </span>

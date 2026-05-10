@@ -11,9 +11,48 @@ import {
 } from "lucide-react";
 import { Card } from "../components/design-system/Card";
 import { StatCard } from "../components/design-system/StatCard";
+import { getState, getTodaySessions, getWeekSessions, getExerciseInfo } from "../../utils/store";
 
 export function Dashboard() {
   const navigate = useNavigate();
+
+  // Read real data from store
+  const user = getState().user;
+  const todaySessions = getTodaySessions();
+  const weekSessions = getWeekSessions();
+  const allSessions = getState().sessions;
+
+  // Compute real stats
+  const todayCompleted = todaySessions.length;
+  const avgAccuracy =
+    allSessions.length > 0
+      ? Math.round(allSessions.reduce((sum, s) => sum + s.accuracy, 0) / allSessions.length)
+      : 0;
+  const weekTotal = weekSessions.length;
+
+  // Recent activity — last 3 sessions
+  const recentActivity = allSessions
+    .slice(-3)
+    .reverse()
+    .map((s) => {
+      const date = new Date(s.date);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      const diffHours = Math.floor(diffMs / 3600000);
+      const diffDays = Math.floor(diffMs / 86400000);
+
+      let timeStr: string;
+      if (diffHours < 1) timeStr = "Just now";
+      else if (diffHours < 24) timeStr = `${diffHours} hours ago`;
+      else if (diffDays === 1) timeStr = "Yesterday";
+      else timeStr = `${diffDays} days ago`;
+
+      return {
+        exercise: s.exerciseName,
+        time: timeStr,
+        accuracy: s.accuracy,
+      };
+    });
 
   const quickActions = [
     {
@@ -21,7 +60,7 @@ export function Dashboard() {
       label: "Start Exercise",
       description: "Begin your session",
       color: "bg-blue-500",
-      path: "/demo-video",
+      path: "/exercise-search",
     },
     {
       icon: FileText,
@@ -50,15 +89,15 @@ export function Dashboard() {
     {
       icon: Target,
       label: "Today's Activity",
-      value: "3/5",
-      subtext: "Exercises completed",
+      value: todayCompleted > 0 ? `${todayCompleted}` : "0",
+      subtext: "Exercises completed today",
       color: "text-blue-600",
       bgColor: "bg-blue-50",
     },
     {
       icon: Award,
       label: "Accuracy",
-      value: "92%",
+      value: allSessions.length > 0 ? `${avgAccuracy}%` : "—",
       subtext: "Average accuracy",
       color: "text-green-600",
       bgColor: "bg-green-50",
@@ -66,7 +105,7 @@ export function Dashboard() {
     {
       icon: Calendar,
       label: "This Week",
-      value: "12",
+      value: `${weekTotal}`,
       subtext: "Total exercises",
       color: "text-purple-600",
       bgColor: "bg-purple-50",
@@ -79,7 +118,9 @@ export function Dashboard() {
       <Card variant="gradient" className="mb-8">
         <div className="flex items-center gap-3 mb-2">
           <Sparkles className="w-8 h-8 text-primary" />
-          <h1 className="text-3xl font-semibold">Welcome to PhysioBuddy</h1>
+          <h1 className="text-3xl font-semibold">
+            Welcome{user ? `, ${user.name}` : " to PhysioBuddy"}
+          </h1>
         </div>
         <p className="text-muted-foreground text-lg">
           Continue your journey to recovery with AI-powered guidance
@@ -137,27 +178,31 @@ export function Dashboard() {
         <h2 className="text-xl font-semibold mb-4">Recent Activity</h2>
         <Card variant="elevated" padding="none">
           <div className="divide-y divide-border">
-            {[
-              { exercise: "Knee Extension", time: "2 hours ago", accuracy: 94 },
-              { exercise: "Shoulder Rotation", time: "5 hours ago", accuracy: 88 },
-              { exercise: "Back Stretch", time: "Yesterday", accuracy: 91 },
-            ].map((activity, index) => (
-              <div key={index} className="p-5 sm:p-6 flex items-center justify-between hover:bg-muted/50 transition-all cursor-pointer group">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 bg-gradient-to-br from-primary/20 to-primary/10 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
-                    <Play className="w-6 h-6 text-primary" />
+            {recentActivity.length > 0 ? (
+              recentActivity.map((activity, index) => (
+                <div key={index} className="p-5 sm:p-6 flex items-center justify-between hover:bg-muted/50 transition-all cursor-pointer group">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-gradient-to-br from-primary/20 to-primary/10 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform shadow-sm">
+                      <Play className="w-6 h-6 text-primary" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-lg">{activity.exercise}</div>
+                      <div className="text-sm text-muted-foreground">{activity.time}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="font-semibold text-lg">{activity.exercise}</div>
-                    <div className="text-sm text-muted-foreground">{activity.time}</div>
+                  <div className="text-right">
+                    <div className="text-2xl font-bold text-success">{activity.accuracy}%</div>
+                    <div className="text-xs text-muted-foreground uppercase tracking-wide">Accuracy</div>
                   </div>
                 </div>
-                <div className="text-right">
-                  <div className="text-2xl font-bold text-success">{activity.accuracy}%</div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide">Accuracy</div>
-                </div>
+              ))
+            ) : (
+              <div className="p-8 text-center text-muted-foreground">
+                <Target className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                <p className="font-medium">No sessions yet</p>
+                <p className="text-sm">Complete your first exercise to see activity here</p>
               </div>
-            ))}
+            )}
           </div>
         </Card>
       </div>

@@ -9,6 +9,7 @@ import { DemoVideo } from "./pages/DemoVideo";
 import { ExerciseMonitoring } from "./pages/ExerciseMonitoring";
 import { SessionReport } from "./pages/SessionReport";
 import { ProgressDashboard } from "./pages/ProgressDashboard";
+import { ResetPassword } from "./pages/ResetPassword";
 
 export const router = createBrowserRouter([
   {
@@ -24,6 +25,7 @@ export const router = createBrowserRouter([
       { path: "/exercise-monitoring", Component: ExerciseMonitoring },
       { path: "/session-report", Component: SessionReport },
       { path: "/progress", Component: ProgressDashboard },
+      { path: "/reset-password", Component: ResetPassword },
     ],
   },
 ]);

@@ -3,18 +3,43 @@ import { Play, Pause, RotateCcw, CheckCircle, Volume2, Target, Clock, Dumbbell }
 import { useNavigate } from "react-router";
 import { Button } from "../components/design-system/Button";
 import { Card } from "../components/design-system/Card";
+import { getState, getExerciseInfo } from "../../utils/store";
+import { getDemoVideo } from "../../utils/demoVideos";
+import type { ExerciseType } from "../../utils/poseUtils";
+
+// Curated per-exercise preview thumbnails (reliable Pexels images)
+const exerciseThumbnails: Record<ExerciseType, string> = {
+  elbow_flexion: 'https://images.pexels.com/photos/4162499/pexels-photo-4162499.jpeg?auto=compress&w=1280',
+  shoulder_abduction: 'https://images.pexels.com/photos/3076509/pexels-photo-3076509.jpeg?auto=compress&w=1280',
+  shoulder_abduction_stretch: 'https://images.pexels.com/photos/3076509/pexels-photo-3076509.jpeg?auto=compress&w=1280',
+  shoulder_flexion: 'https://images.pexels.com/photos/4162497/pexels-photo-4162497.jpeg?auto=compress&w=1280',
+  shoulder_internal_external_rotation: 'https://images.pexels.com/photos/3823207/pexels-photo-3823207.jpeg?auto=compress&w=1280',
+  arm_raise_rehab: 'https://images.pexels.com/photos/4164761/pexels-photo-4164761.jpeg?auto=compress&w=1280',
+  knee_rotation: 'https://images.pexels.com/photos/3756165/pexels-photo-3756165.jpeg?auto=compress&w=1280',
+  straight_leg_raise: 'https://images.pexels.com/photos/3757376/pexels-photo-3757376.jpeg?auto=compress&w=1280',
+  sit_to_stand: 'https://images.pexels.com/photos/3807571/pexels-photo-3807571.jpeg?auto=compress&w=1280',
+  squat: 'https://images.pexels.com/photos/3775566/pexels-photo-3775566.jpeg?auto=compress&w=1280',
+  single_leg_stand: 'https://images.pexels.com/photos/3807571/pexels-photo-3807571.jpeg?auto=compress&w=1280',
+  heel_raises: 'https://images.pexels.com/photos/3775566/pexels-photo-3775566.jpeg?auto=compress&w=1280',
+  toe_raises: 'https://images.pexels.com/photos/3775566/pexels-photo-3775566.jpeg?auto=compress&w=1280',
+  back_straightening: 'https://images.pexels.com/photos/3768916/pexels-photo-3768916.jpeg?auto=compress&w=1280',
+  neck_alignment: 'https://images.pexels.com/photos/3845810/pexels-photo-3845810.jpeg?auto=compress&w=1280',
+  basic_core_activation: 'https://images.pexels.com/photos/3768916/pexels-photo-3768916.jpeg?auto=compress&w=1280',
+};
 
 export function DemoVideo() {
   const navigate = useNavigate();
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const totalDuration = 45; // seconds
+  const [useFallback, setUseFallback] = useState(false);
+
+  // Read selected exercise from store
+  const selectedExercise = getState().selectedExercise;
+  const exerciseInfo = getExerciseInfo(selectedExercise);
+  const demoVideo = getDemoVideo(selectedExercise);
 
   const handleStartExercise = () => {
     navigate("/exercise-monitoring");
   };
-
-  const progressPercentage = (currentTime / totalDuration) * 100;
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto">
@@ -30,57 +55,73 @@ export function DemoVideo() {
       <Card variant="elevated" padding="none" className="mb-6">
         {/* Video Player */}
         <div className="relative aspect-video bg-gradient-to-br from-slate-900 to-slate-800">
-          <img
-            src="https://images.unsplash.com/photo-1764314359427-6e685ce5b719?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHxwaHlzaW90aGVyYXB5JTIwZXhlcmNpc2UlMjBtZWRpY2FsfGVufDF8fHx8MTc3NjM1MDMxN3ww&ixlib=rb-4.1.0&q=80&w=1080"
-            alt="Exercise Demo"
-            className="w-full h-full object-cover"
-          />
-          
-          {/* Video Overlay */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent" />
+          {isPlaying ? (
+            <iframe
+              src={`${useFallback ? demoVideo.fallbackUrl : demoVideo.url}${useFallback || demoVideo.url.includes('?') ? '&' : '?'}autoplay=1`}
+              title={demoVideo.title}
+              className="w-full h-full"
+              loading="lazy"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+              onError={() => {
+                if (!useFallback) {
+                  setUseFallback(true);
+                }
+              }}
+            />
+          ) : (
+            <>
+              {/* Exercise-specific curated thumbnail */}
+              <img
+                src={exerciseThumbnails[selectedExercise]}
+                alt={`${exerciseInfo.name} Demo`}
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).style.display = 'none';
+                }}
+              />
+              {/* Dark Gradient Overlay */}
+              <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/30" />
+            </>
+          )}
           
           {/* Play/Pause Button */}
-          <button
-            onClick={() => setIsPlaying(!isPlaying)}
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-white/95 hover:bg-white rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-110 group"
-          >
-            {isPlaying ? (
-              <Pause className="w-10 h-10 text-primary" />
-            ) : (
+          {!isPlaying && (
+            <button
+              onClick={() => setIsPlaying(true)}
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-20 h-20 bg-white/95 hover:bg-white rounded-full flex items-center justify-center shadow-2xl transition-all hover:scale-110 group z-10"
+            >
               <Play className="w-10 h-10 text-primary ml-1" />
-            )}
-          </button>
+            </button>
+          )}
 
           {/* Video Title Overlay */}
-          <div className="absolute top-4 left-4 bg-black/70 backdrop-blur-sm rounded-xl px-4 py-2">
-            <h3 className="text-white font-semibold">Knee Extension Exercise</h3>
-            <p className="text-white/80 text-sm">Beginner Level</p>
-          </div>
+          {!isPlaying && (
+            <div className="absolute top-4 left-4 bg-black/70 backdrop-blur-sm rounded-xl px-4 py-2 z-10">
+              <h3 className="text-white font-semibold">{exerciseInfo.name}</h3>
+              <p className="text-white/80 text-sm">{exerciseInfo.difficulty} Level</p>
+            </div>
+          )}
 
           {/* Volume Control */}
-          <button className="absolute top-4 right-4 w-10 h-10 bg-black/70 backdrop-blur-sm rounded-lg flex items-center justify-center hover:bg-black/80 transition-colors">
-            <Volume2 className="w-5 h-5 text-white" />
-          </button>
+          {!isPlaying && (
+            <button className="absolute top-4 right-4 w-10 h-10 bg-black/70 backdrop-blur-sm rounded-lg flex items-center justify-center hover:bg-black/80 transition-colors z-10">
+              <Volume2 className="w-5 h-5 text-white" />
+            </button>
+          )}
 
-          {/* Progress Bar */}
-          <div className="absolute bottom-0 left-0 right-0 p-4">
-            <div className="flex items-center gap-3 text-white text-sm mb-2">
-              <span>{Math.floor(currentTime / 60)}:{(currentTime % 60).toString().padStart(2, '0')}</span>
-              <div className="flex-1 h-1.5 bg-white/30 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-primary rounded-full transition-all"
-                  style={{ width: `${progressPercentage}%` }}
-                />
-              </div>
-              <span>{Math.floor(totalDuration / 60)}:{(totalDuration % 60).toString().padStart(2, '0')}</span>
+          {/* Duration Badge */}
+          {!isPlaying && (
+            <div className="absolute bottom-4 right-4 bg-black/80 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-sm font-medium z-10">
+              {demoVideo.duration}
             </div>
-          </div>
+          )}
         </div>
 
         {/* Video Controls */}
         <div className="bg-muted/50 px-6 py-4 flex items-center justify-center gap-4">
           <button
-            onClick={() => setCurrentTime(0)}
+            onClick={() => { setIsPlaying(false); setUseFallback(false); }}
             className="p-3 hover:bg-white rounded-lg transition-colors"
           >
             <RotateCcw className="w-5 h-5 text-foreground" />
@@ -111,11 +152,11 @@ export function DemoVideo() {
             </li>
             <li className="flex items-start gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-              <span className="text-sm">Extend your leg slowly and controlled</span>
+              <span className="text-sm">Perform the movement slowly and controlled</span>
             </li>
             <li className="flex items-start gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-              <span className="text-sm">Hold at the top for 2 seconds</span>
+              <span className="text-sm">Hold at the peak position for 2 seconds</span>
             </li>
             <li className="flex items-start gap-3">
               <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
@@ -162,7 +203,7 @@ export function DemoVideo() {
             </div>
             <div>
               <div className="text-sm text-muted-foreground mb-1">Target Area</div>
-              <div className="font-semibold">Knee / Quadriceps</div>
+              <div className="font-semibold">{exerciseInfo.targetArea}</div>
             </div>
           </div>
           <div className="flex items-start gap-3">
@@ -171,7 +212,7 @@ export function DemoVideo() {
             </div>
             <div>
               <div className="text-sm text-muted-foreground mb-1">Duration</div>
-              <div className="font-semibold">10-12 minutes</div>
+              <div className="font-semibold">{exerciseInfo.duration}</div>
             </div>
           </div>
           <div className="flex items-start gap-3">
