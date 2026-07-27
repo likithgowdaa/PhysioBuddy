@@ -243,6 +243,8 @@ Works without human supervision
 
 👉 “PhysioBuddy is an AI-powered physiotherapy assistant that uses real-time pose detection to guide, monitor, and improve patient recovery at home.”
 
+THANK YOU!!!
+
   ## Running the code
 
   Run `npm i` to install the dependencies.
